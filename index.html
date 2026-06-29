@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PetDesk 桌面搭子</title>
+    <style>
+      * { margin:0; padding:0; box-sizing:border-box; }
+      html, body { width:100%; height:100%; overflow:hidden; background:transparent; user-select:none; -webkit-user-select:none; }
+      #pet-stage { position:relative; width:100%; height:100%; background:transparent; }
+      #pet-video {
+        position:absolute; inset:0; width:100%; height:100%;
+        object-fit:contain; background:transparent; pointer-events:auto;
+      }
+      #chroma-canvas {
+        position:absolute; inset:0; width:100%; height:100%;
+        display:none; background:transparent; pointer-events:auto;
+      }
+      #overlay-canvas {
+        position:absolute; inset:0; width:100%; height:100%;
+        pointer-events:none; background:transparent;
+      }
+      /* 调试：确保窗口可见 */
+      #debug-bg {
+        position:absolute; inset:0; width:100%; height:100%;
+        background: transparent;
+        display:none; align-items:center; justify-content:center;
+        color:#fff; font: bold 18px "PingFang SC","Microsoft YaHei",sans-serif;
+        pointer-events:none; z-index:0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pet-stage">
+      <div id="debug-bg">🐱 PetDesk</div>
+      <video id="pet-video" muted loop playsinline></video>
+      <canvas id="chroma-canvas"></canvas>
+      <canvas id="overlay-canvas"></canvas>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

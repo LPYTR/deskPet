@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-electron/
+.env
+data/
+cache/
+*.db
+.DS_Store
+dev-dist/
+*.dmg
+*.exe
+*.AppImage
+release/
+# 备份/大文件
+*_hevc_backup.*
+*.mp4
