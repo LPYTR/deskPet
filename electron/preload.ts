@@ -74,6 +74,10 @@ contextBridge.exposeInMainWorld("petAPI", {
     ipcRenderer.on("walk-flip", handler);
     return () => ipcRenderer.removeListener("walk-flip", handler);
   },
+
+  // 上报交互（用于窗口顶部自动散步计时）
+  reportInteraction: (): Promise<void> =>
+    ipcRenderer.invoke("report-interaction"),
 });
 
 // ===== 类型 =====
@@ -89,6 +93,7 @@ interface WindowChangeInfo {
   title: string;
   owner: string;
   bounds: { x: number; y: number; width: number; height: number } | null;
+  isMaximized: boolean;
 }
 
 interface MouseStateEvent {

@@ -13,7 +13,7 @@ export default defineConfig({
           build: {
             outDir: "dist-electron",
             rollupOptions: {
-              external: ["electron", "active-win"],
+              external: ["electron", "active-win", "child_process", "fs", "os", "path"],
             },
           },
         },

@@ -7,6 +7,7 @@ import {
   Menu,
   nativeImage,
   screen,
+  systemPreferences,
 } from "electron";
 import { join } from "path";
 import {
@@ -26,79 +27,16 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let manualPosition = false;
 
-// ===== 连续平滑跟随 =====
-let targetX: number | null = null;
-let targetY: number | null = null;
-let followTimer: ReturnType<typeof setInterval> | null = null;
+// ===== 窗口切换走路 =====
 let isWindowSwitch = false;
-let switchTargetX: number | null = null; // 窗口切换时的原始目标（不被步进覆盖）
+let switchTargetX: number | null = null;
 
-function updatePetTarget(x: number, y: number, isSwitch: boolean) {
-  targetX = x;
-  targetY = y;
-  if (isSwitch) {
-    isWindowSwitch = true;
-    switchTargetX = x; // 保存原始目标
-  }
-
-  // 窗口切换时：用 walk-step 走向目标（有可见步进）
-  if (isSwitch && mainWindow && !walkStepping) {
-    const [cx] = mainWindow.getPosition();
-    const dir = x > cx ? 1 : -1;
-    walkStepping = true;
-    walkDirection = dir;
-    lastBounceTime = 0;
-    if (dir === -1) mainWindow.webContents.send("walk-flip");
-  } else if (!followTimer && mainWindow && !walkStepping) {
-    startFollowLoop();
-  }
-}
-
-function startFollowLoop() {
-  if (followTimer || walkStepping) return;  // 走路时不启动跟随
-  followTimer = setInterval(() => {
-    if (!mainWindow || targetX === null || targetY === null || walkStepping) {
-      stopFollowLoop();
-      return;
-    }
-
-    const [cx, cy] = mainWindow.getPosition();
-    const dx = targetX - cx;
-    const dy = targetY - cy;
-    const dist = Math.hypot(dx, dy);
-
-    // 已到达目标
-    if (dist < 2) {
-      if (isWindowSwitch) {
-        mainWindow.webContents.send("transition", "arrive");
-        isWindowSwitch = false;
-      }
-      mainWindow.setPosition(targetX, targetY);
-      stopFollowLoop();
-      return;
-    }
-
-    const speed = isWindowSwitch ? 0.10 : 0.13;
-    let nx = Math.round(cx + dx * speed);
-    let ny = Math.round(cy + dy * speed);
-
-    // 用当前位置所在屏幕实时 clamp（不用缓存，防止跨屏 stale 导致震荡）
-    const display = screen.getDisplayNearestPoint({ x: cx, y: cy });
-    const { workArea } = display;
-    const margin = 4;
-    nx = clamp(nx, workArea.x + margin, workArea.x + workArea.width - PET_SIZE - margin);
-    ny = clamp(ny, workArea.y + margin, workArea.y + workArea.height - PET_SIZE - margin);
-
-    mainWindow.setPosition(nx, ny);
-  }, 16);
-}
-
-function stopFollowLoop() {
-  if (followTimer) {
-    clearInterval(followTimer);
-    followTimer = null;
-  }
-}
+// ===== 窗口顶部自动散步 =====
+let lastInteractionTime = Date.now();
+let windowTopWalk = false;
+let windowTopWalkBounds: { x: number; y: number; width: number } | null = null;
+let latestWindowBounds: { x: number; y: number; width: number; height: number } | null = null;
+let latestIsMaximized = false;
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -208,28 +146,71 @@ function createTray() {
 
 function startWindowTracking() {
   let lastTitle = "";
+  let switchCooldown = 0; // 窗口切换冷却：新窗口需停留 ≥5s 才跟随
 
   startTracking((event) => {
     if (!mainWindow || manualPosition) return;
 
-    const { x, y } = event.petPosition;
-    const isSwitch =
-      event.type === "switch" &&
-      !!event.activeWindow?.title &&
-      event.activeWindow.title !== lastTitle;
+    // 持续更新窗口信息（用于顶部自动散步判断）
+    // 过滤 PetDesk 自身窗口
+    if (event.activeWindow?.bounds) {
+      const isSelf =
+        event.activeWindow.owner === "Electron" ||
+        event.activeWindow.owner === "pawdesk" ||
+        event.activeWindow.title === "PetDesk 桌面搭子" ||
+        (event.activeWindow.bounds.width === PET_SIZE && event.activeWindow.bounds.height === PET_SIZE);
+      if (!isSelf) {
+        latestWindowBounds = event.activeWindow.bounds;
+        latestIsMaximized = event.isMaximized;
+      }
+    } else {
+      latestWindowBounds = null;
+      latestIsMaximized = false;
+    }
 
-    // 更新目标位置（连续平滑跟随，不会瞬移）
-    updatePetTarget(x, y, isSwitch);
-
-    // 推送窗口信息给渲染进程（含目标位置用于计算走路方向）
+    // 始终推送窗口信息给渲染进程
     mainWindow.webContents.send("window-info", {
       type: event.type,
       title: event.activeWindow?.title || "",
       owner: event.activeWindow?.owner || "",
       bounds: event.activeWindow?.bounds || null,
-      petX: x,
-      petY: y,
+      petX: event.petPosition.x,
+      petY: event.petPosition.y,
+      isMaximized: event.isMaximized,
     });
+
+    // 仅响应窗口切换，忽略 move/minimize/desktop 事件（避免跟窗口移动滑动）
+    if (event.type !== "switch") return;
+
+    const isTitleChange =
+      !!event.activeWindow?.title &&
+      event.activeWindow.title !== lastTitle;
+
+    if (!isTitleChange) return;
+
+    // 窗口切换时停止顶部散步
+    if (windowTopWalk) {
+      stopWindowTopWalk();
+    }
+    lastInteractionTime = Date.now();
+
+    // 窗口切换冷却：防止频繁切换窗口导致猫咪来回跑
+    const now = Date.now();
+    if (switchCooldown && now < switchCooldown) return;
+    switchCooldown = now + 5000;
+
+    const { x, y } = event.petPosition;
+    isWindowSwitch = true;
+    switchTargetX = x;
+
+    // 启动走路步进
+    if (!walkStepping && mainWindow) {
+      const [cx] = mainWindow.getPosition();
+      walkDirection = x > cx ? 1 : -1;
+      walkStepping = true;
+      lastBounceTime = 0;
+      if (walkDirection === -1) mainWindow.webContents.send("walk-flip");
+    }
 
     if (event.activeWindow?.title) {
       lastTitle = event.activeWindow.title;
@@ -302,10 +283,8 @@ ipcMain.handle("move-window-by", (_event, dx: number, dy: number) => {
   let newX = x + Math.round(dx);
   let newY = y + Math.round(dy);
 
-  // 拖动时停止自动跟随
-  stopFollowLoop();
-  targetX = null;
-  targetY = null;
+  // 拖动时停止走路
+  walkStepping = false;
 
   // 限制在当前显示器的工作区内
   const display = screen.getDisplayNearestPoint({ x: newX, y: newY });
@@ -346,18 +325,62 @@ ipcMain.handle("set-manual-position", (_event, manual: boolean) => {
   manualPosition = manual;
 });
 
+// ===== 窗口顶部自动散步 =====
+
+function stopWindowTopWalk() {
+  if (!windowTopWalk) return;
+  windowTopWalk = false;
+  windowTopWalkBounds = null;
+  walkStepping = false;
+  mainWindow?.webContents.send("transition", "arrive");
+}
+
+ipcMain.handle("report-interaction", () => {
+  lastInteractionTime = Date.now();
+  if (windowTopWalk) {
+    stopWindowTopWalk();
+  }
+});
+
+// 每 2s 检查是否应启动窗口顶部散步
+setInterval(() => {
+  if (!mainWindow || manualPosition || windowTopWalk || walkStepping) return;
+  if (!latestWindowBounds || latestIsMaximized) return;
+  if (Date.now() - lastInteractionTime < 60_000) return;
+
+  const b = latestWindowBounds;
+  const topY = b.y - PET_SIZE;
+  const leftBound = b.x;
+  const rightBound = b.x + b.width - PET_SIZE;
+
+  // 窗口顶部空间不够 → 不触发
+  if (rightBound - leftBound < 60) return;
+
+  windowTopWalk = true;
+  windowTopWalkBounds = { x: leftBound, y: topY, width: b.width };
+
+  // 定位到窗口顶部中央
+  const centerX = b.x + b.width / 2 - PET_SIZE / 2;
+  mainWindow.setPosition(Math.round(centerX), topY);
+
+  // 开始走路
+  walkStepping = true;
+  walkDirection = 1;
+  lastBounceTime = 0;
+  mainWindow.webContents.send("transition", "run");
+}, 2000);
+
 // 走路步进：每 50ms 向指定方向移动（配合 walk 动画）
 let walkStepping = false;
 let walkDirection = 1; // 1=右, -1=左
 let lastBounceTime = 0;  // 上次反弹时间戳，防连触发
-const WALK_STEP = 3;
+const WALK_STEP = 2;
 const BOUNCE_COOLDOWN = 800; // 反弹冷却 ms
 
 ipcMain.handle("walk-step-start", (_event, dir: number) => {
   walkStepping = true;
   walkDirection = dir || 1;
   lastBounceTime = 0;
-  stopFollowLoop();
 });
 
 ipcMain.handle("walk-step-stop", () => {
@@ -369,6 +392,31 @@ setInterval(() => {
   if (!mainWindow || !walkStepping) return;
   const STEP = WALK_STEP * walkDirection;
   const [x, y] = mainWindow.getPosition();
+
+  // ===== 窗口顶部散步模式：约束在窗口上边界 =====
+  if (windowTopWalk && windowTopWalkBounds) {
+    const wtLeft = windowTopWalkBounds.x;
+    const wtRight = windowTopWalkBounds.x + windowTopWalkBounds.width - PET_SIZE;
+    let nx = clamp(x + STEP, wtLeft, wtRight);
+    const now = Date.now();
+
+    // 碰到窗口边界 → 反向
+    const atRightBound = walkDirection > 0 && nx >= wtRight;
+    const atLeftBound = walkDirection < 0 && nx <= wtLeft;
+    if ((atRightBound || atLeftBound) && now - lastBounceTime > BOUNCE_COOLDOWN) {
+      walkDirection = -walkDirection;
+      lastBounceTime = now;
+      mainWindow.webContents.send("walk-flip");
+      nx = clamp(x + WALK_STEP * walkDirection, wtLeft, wtRight);
+    }
+
+    if (nx !== x) {
+      mainWindow.setPosition(nx, windowTopWalkBounds.y);
+    }
+    return;
+  }
+
+  // ===== 普通模式：屏幕边界 =====
   const display = screen.getDisplayNearestPoint({ x, y });
   const wa = display.workArea;
   const margin = 4;
@@ -382,7 +430,6 @@ setInterval(() => {
       walkStepping = false;
       isWindowSwitch = false;
       switchTargetX = null;
-      targetX = x; targetY = y;
       mainWindow.webContents.send("transition", "arrive");
       return;
     }
@@ -406,8 +453,6 @@ setInterval(() => {
 
   if (nx !== x) {
     mainWindow.setPosition(nx, y);
-    targetX = nx;
-    targetY = y;
   }
 }, 50);
 
@@ -434,8 +479,8 @@ ipcMain.handle("move-to-corner", async () => {
   }
 
   manualPosition = true;
-  stopFollowLoop();
-  updatePetTarget(nearest.x, nearest.y, false);
+  walkStepping = false;
+  mainWindow.setPosition(nearest.x, nearest.y);
 
   // 5 秒后恢复追踪
   setTimeout(() => {
@@ -446,6 +491,17 @@ ipcMain.handle("move-to-corner", async () => {
 // ===== 生命周期 =====
 
 app.whenReady().then(() => {
+  // macOS: 设为 accessory 模式，防止 PetDesk 成为前台应用
+  // 这样 active-win 才能正确检测到用户真正在用的窗口
+  if (process.platform === "darwin") {
+    app.setActivationPolicy("accessory");
+    const trusted = systemPreferences.isTrustedAccessibilityClient(false);
+    console.log(`[Accessibility] 辅助功能权限: ${trusted ? "✅ 已授权" : "❌ 未授权"}`);
+    if (!trusted) {
+      systemPreferences.isTrustedAccessibilityClient(true);
+    }
+  }
+
   createWindow();
   createTray();
   registerShortcuts();

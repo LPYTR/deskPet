@@ -23,7 +23,7 @@ const SAMPLE_INTERVAL = 100; // ms (原 50ms，降低以减少 CPU)
 const IDLE_SAMPLE_INTERVAL = 500; // 空闲时进一步降频
 const HOVER_TIMEOUT = 1000; // 悬停 ≥1s 触发 hover
 const IDLE_LONG_TIMEOUT = 180_000; // 3min 无移动
-const DRAG_SPEED_THRESHOLD = 2000; // px/s, 超过为快速拖拽
+const DRAG_SPEED_THRESHOLD = 5000; // px/s, 超过为快速拖拽（提高阈值减少办公误触发）
 const HOVER_HISTORY_SIZE = 3; // 连续 N 次在宠物区域内才判定 hover
 
 // ===== 状态 =====

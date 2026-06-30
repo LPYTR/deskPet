@@ -9,6 +9,7 @@ interface WindowChangeInfo {
   title: string;
   owner: string;
   bounds: { x: number; y: number; width: number; height: number } | null;
+  isMaximized: boolean;
 }
 
 interface MouseStateEvent {
@@ -36,6 +37,7 @@ interface PetAPI {
   onWalkFlip(callback: () => void): Unsubscriber;
   moveWindowBy(dx: number, dy: number): Promise<void>;
   endDrag(): Promise<void>;
+  reportInteraction(): Promise<void>;
 }
 
 interface Window {

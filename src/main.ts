@@ -143,6 +143,8 @@ const REAL_VIDEO_SRCS: Record<string, string> = {
   idle:      `${ASSET_BASE}/idle.webm`,
   happy:     `${ASSET_BASE}/happy.webm`,
   walk:      `${ASSET_BASE}/walk.webm`,
+  run:       `${ASSET_BASE}/run.webm`,
+  surprised: `${ASSET_BASE}/surprised.webm`,
 };
 
 // ===== 启动 =====
@@ -164,7 +166,7 @@ async function init() {
 
   // 注册真实视频动作
   const videoActions = Object.entries(REAL_VIDEO_SRCS).map(([name, src]) => ({
-    [name]: { src, loop: ["idle", "walk"].includes(name) },
+    [name]: { src, loop: ["idle", "walk", "run"].includes(name) },
   })).reduce((acc, cur) => ({ ...acc, ...cur }), {});
   videoCtrl.registerActions(videoActions);
 
@@ -319,6 +321,8 @@ function setupKeyboard() {
     const action = ACTION_KEYS[key];
     if (!action) return;
 
+    window.petAPI.reportInteraction();
+
     // walk → 向右走, run → 向左走
     if (action === "walk") {
       playAction("walk");
@@ -433,10 +437,12 @@ function setupAllMouse() {
 
     if (dragInfo.dragging) {
       window.petAPI.endDrag();
+      window.petAPI.reportInteraction();
     } else {
       const now = Date.now();
       if (now - lastClick < 500) { dragInfo = null; return; }
       lastClick = now;
+      window.petAPI.reportInteraction();
       playAction("happy");
       mood = Math.min(100, mood + 2);
       const msgs = ["汪~今天也喜欢我!", "喵~你终于理我了", "嘿嘿，别摸头~", "嗷呜~好开心"];
@@ -451,6 +457,7 @@ function setupAllMouse() {
     const now = Date.now();
     if (now - lastDouble < 2000) return;
     lastDouble = now;
+    window.petAPI.reportInteraction();
     const s = ["surprised", "happy"];
     playAction(s[Math.floor(Math.random() * s.length)]);
     mood = Math.min(100, mood + 3);
@@ -460,6 +467,7 @@ function setupAllMouse() {
   // 右键菜单
   ct.addEventListener("contextmenu", (e) => {
     e.preventDefault();
+    window.petAPI.reportInteraction();
     showContextMenu(e.clientX, e.clientY);
   });
 
@@ -534,11 +542,11 @@ function setupWindowTracking() {
 
 function setupTransitionListener() {
   window.petAPI.onTransition((phase) => {
-    if (phase === "run") overlay.startParticles("dust");
-    else if (phase === "arrive") {
-      overlay.stopParticles();
+    if (phase === "run") {
+      playAction("walk");
+      startWalkStep(walkDir || 1);
+    } else if (phase === "arrive") {
       playAction("idle");
-      overlay.showBubble("到了!", 1500);
     }
   });
 }
@@ -552,14 +560,14 @@ function setupMouseStateListener() {
       lastScared = now;
       playAction("surprised");
       overlay.startParticles("confetti");
-      window.petAPI.moveToCorner();
+      mood = Math.max(0, mood - 5);
+      // 原地受惊即可，不跳角落（办公场景易误触，瞬移干扰工作）
       setTimeout(() => overlay.stopParticles(), 1500);
     } else if (e.state === "idle_long" && now - lastAttention > 300_000) {
       lastAttention = now;
-      playAction("walk");
-      startWalkStep();
+      playAction("happy");
       overlay.showBubble("理我一下嘛~", 3000);
-      setTimeout(() => { if (getCurrentAction() === "walk") { playAction("idle"); stopWalkStep(); } }, 2000);
+      // 不自动走路，办公场景下走动会干扰注意力
     }
   });
 }
